@@ -217,6 +217,12 @@ for i, name in enumerate(output_var_names):
     if k != "reverse_sign":
       da.attrs[k] = v
   ds[name] = da
+# Add metadata to the dataset
+ds.attrs["description"] = "SAFARI Mooring Fluxes computed using COARE 3.6 bulk flux algorithm"
+ds.attrs["source"] = "SAFARI Mooring"
+ds.attrs["contact"] = "Tom Farrar (jfarrar@whoi.edu) and Drew Lucas (ajlucas@ucsd.edu)"
+ds.attrs["created_on"] = datetime.datetime.now().isoformat()
+ds.attrs["funding"] = "SAFARI project funded by the US Office of Naval Research (ONR)"
 
 out_path = os.path.join(home_dir, "Python/SAFARI_mooring/data/SAFARI_fluxes.nc")
 ds.to_netcdf(out_path)
