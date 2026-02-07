@@ -1,6 +1,7 @@
 
-# 2025/11/19 Benjamin Greenwood compute fluxes using pycoare 3.5
-# COARE v3.5 bulk flux algorithm
+# 2025/11/19 Benjamin Greenwood compute fluxes using COARE 3.6 bulk flux algorithm
+# 2026/02/07 Tom Farrar add interpolation of nans in input variables and plotting of input variables;
+# added more plots of output variables; added saving output to netCDF file with metadata
 
 # %%
 import os
