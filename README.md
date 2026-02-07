@@ -27,4 +27,3 @@ SST context plotting is **not working right now** because there appears to be an
 **Usage**
 Run scripts from the repo root or `src/` directory as you normally do in your workflow. Most scripts are intended to be executed as stand‑alone analysis steps.
 
-If you need a higher‑level driver, configuration file, or an environment spec, say the word and I’ll add it.
