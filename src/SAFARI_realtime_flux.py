@@ -243,15 +243,6 @@ plt.grid()
 plt.show()
 
 # %%
-plt.figure()
-ds['wind_stress_eastward'].plot(label='Wind Stress X')
-ds['wind_stress_northward'].plot(label='Wind Stress Y')
-plt.legend()
-plt.title('SAFARI Mooring Wind Stress')
-plt.ylabel('Wind Stress (N/m^2)')
-plt.grid()
-plt.show()
-# %%
 fig, axes = plt.subplots(6, 1, figsize=(8, 8), sharex=True)
 plt.subplot(6,1,1)
 ds['wind_speed_at_reference_height'].plot(label='10m wind speed')
