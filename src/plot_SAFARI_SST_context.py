@@ -53,8 +53,8 @@ if not os.path.exists(data_dir):
     os.makedirs(data_dir)
 
 #url = 'https://psl.noaa.gov/thredds/fileServer/Datasets/noaa.oisst.v2.highres/sst.day.mean.2023.nc'
-url = 'https://psl.noaa.gov/thredds/fileServer/Datasets/noaa.oisst.v2.highres/sst.day.mean.2026.nc'
-
+#url = 'https://psl.noaa.gov/thredds/fileServer/Datasets/noaa.oisst.v2.highres/sst.day.mean.2026.nc'
+url = 'https://downloads.psl.noaa.gov/Datasets/noaa.oisst.v2.highres/sst.day.mean.2026.nc'
 
 filename = os.path.join(data_dir, os.path.basename(url))
 # Commenting out since cruise is over:
@@ -308,7 +308,7 @@ def plot_map(data, levels, title='', outfile='', savefig=False, ax=None):
     ax.add_feature(cartopy.feature.RIVERS, edgecolor='blue', zorder=10, alpha=0.25)
 
     # Plot the data
-    cs = ax.pcolormesh(data.lon, data.lat, data, vmin=levels[0], vmax=levels[-1], transform=ccrs.PlateCarree())
+    cs = ax.pcolormesh(data.lon.values, data.lat.values, np.squeeze(data.values), vmin=levels[0], vmax=levels[-1], transform=ccrs.PlateCarree())
     cb = plt.colorbar(cs, ax=ax, fraction=0.022, extend='both')
     cb.set_label('SST [$\\circ$C]', fontsize=10)
     ax.axis('scaled')
@@ -330,7 +330,7 @@ def plot_map(data, levels, title='', outfile='', savefig=False, ax=None):
 t1 = ds.time[-1].values
 fstr = t1.astype('datetime64[D]')
 t1 = str(fstr)
-sst = ds.sst.sel(lon=slice(xmin,xmax), lat=slice(ymin,ymax),time=t1)
+sst = ds.sst.isel(time=-1).sel(lon=slice(xmin,xmax), lat=slice(ymin,ymax))
 
 
 
