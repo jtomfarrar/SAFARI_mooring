@@ -227,6 +227,51 @@ ds.attrs["funding"] = "SAFARI project funded by the US Office of Naval Research 
 out_path = os.path.join(home_dir, "Python/SAFARI_mooring/data/SAFARI_fluxes.nc")
 ds.to_netcdf(out_path)
 
+# %% Save L3 met inputs
+# Use original_input_vars (NaN-preserving, before interpolation)
+U_orig, t_orig, rh_orig, P_orig, ts_orig, sw_orig, lw_orig, lat_orig, lon_orig, cond_orig, stmp_orig, rain_orig, Ss_orig = original_input_vars
+Hs = select_sensor(time, wave_time, CR6['FF']['Hs_fft'])
+
+L3_vars = {
+    'wind_speed':                 (U_orig,    {'long_name': 'wind speed',                      'units': 'm/s',          'sensor_height': '3.4 m'}),
+    'air_temperature':            (t_orig,    {'long_name': 'air temperature',                  'units': 'degC',         'sensor_height': '3.03 m'}),
+    'relative_humidity':          (rh_orig,   {'long_name': 'relative humidity',                'units': '%',            'sensor_height': '3.03 m'}),
+    'air_pressure':               (P_orig,    {'long_name': 'air pressure',                     'units': 'mb'}),
+    'sea_surface_temperature':    (ts_orig,   {'long_name': 'sea surface temperature',          'units': 'degC'}),
+    'solar_radiation_downwards':  (sw_orig,   {'long_name': 'downwelling shortwave radiation',  'units': 'W/m^2'}),
+    'longwave_radiation_downwards':(lw_orig,  {'long_name': 'downwelling longwave radiation',   'units': 'W/m^2'}),
+    'latitude':                   (lat_orig,  {'long_name': 'latitude',                         'units': 'degrees_north'}),
+    'longitude':                  (lon_orig,  {'long_name': 'longitude',                        'units': 'degrees_east'}),
+    'conductivity':               (cond_orig, {'long_name': 'sea water conductivity',           'units': 'mS/cm'}),
+    'salinity':                   (Ss_orig,   {'long_name': 'practical salinity',               'units': 'PSU'}),
+    'rain_rate':                  (rain_orig, {'long_name': 'rain rate',                        'units': 'mm/hr'}),
+    'wave_height':                (Hs,        {'long_name': 'significant wave height',          'units': 'm'}),
+}
+
+ds_L3 = xr.Dataset(coords={'time': time})
+for name, (data, attrs) in L3_vars.items():
+    da = xr.DataArray(np.array(data, dtype=float), dims=('time',), coords={'time': time})
+    da.attrs = attrs
+    ds_L3[name] = da
+
+ds_L3.attrs['description'] = 'SAFARI Mooring L3 met inputs used for COARE 3.6 bulk flux algorithm'
+ds_L3.attrs['source'] = 'SAFARI Mooring'
+ds_L3.attrs['contact'] = 'Tom Farrar (jfarrar@whoi.edu) and Drew Lucas (ajlucas@ucsd.edu)'
+ds_L3.attrs['created_on'] = datetime.datetime.now().isoformat()
+ds_L3.attrs['funding'] = 'SAFARI project funded by the US Office of Naval Research (ONR)'
+
+encoding_L3 = {}
+for var in list(ds_L3.data_vars) + list(ds_L3.coords):
+    enc = {'zlib': True, 'complevel': 4}
+    if np.issubdtype(ds_L3[var].dtype, np.floating):
+        enc['dtype'] = 'float32'
+        enc['_FillValue'] = np.nan
+    encoding_L3[var] = enc
+
+L3_path = os.path.join(home_dir, 'Python/SAFARI_mooring/data/SAFARI_L3_met.nc')
+ds_L3.to_netcdf(L3_path, encoding=encoding_L3)
+print(f'Saved {L3_path}')
+
 # %%
 ds
 # %%

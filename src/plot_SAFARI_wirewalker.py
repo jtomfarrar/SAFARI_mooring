@@ -106,7 +106,7 @@ if savefig:
 
 
 # %%
-# Combined T and S Hovmoller
+# Combined T and S depth-time plot
 fig, axs = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
 
 pcm0 = axs[0].pcolormesh(time, depth, T_mat, cmap='RdYlBu_r', shading='auto')
