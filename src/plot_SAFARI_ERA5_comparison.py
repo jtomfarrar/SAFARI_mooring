@@ -35,10 +35,6 @@ ds_flux = xr.open_dataset(data_dir / 'SAFARI_fluxes.nc')
 ds_L3   = xr.open_dataset(data_dir / 'SAFARI_L3_met.nc')
 ds_era5 = xr.open_dataset(data_dir / 'external/ERA5_surface_SAFARI_site_timeseries.nc').rename({'valid_time': 'time'})
 
-# SAFARI timestamps are in US Eastern Time (UTC-5 in winter); shift to UTC
-utc_offset = np.timedelta64(5, 'h')   # change to 4 for EDT
-ds_flux = ds_flux.assign_coords(time=ds_flux.time + utc_offset)
-ds_L3   = ds_L3.assign_coords(time=ds_L3.time   + utc_offset)
 
 # Zero or negative LW is a bad value (physically impossible); mask to NaN
 ds_L3['longwave_radiation_downwards'] = ds_L3.longwave_radiation_downwards.where(
@@ -111,7 +107,7 @@ axs[1].plot(ds_L3.time,   ds_L3.sea_surface_temperature,              color='C4'
 axs[1].plot(ds_era5.time, ds_era5.skin_temperature,                   color='C4', label='ERA5 skin T',   linewidth=0.8, linestyle='--')
 axs[2].plot(ds_flux.time, ds_flux.relative_humidity_at_reference_height, color='C2', label='SAFARI 3 m', linewidth=0.8)
 axs[2].plot(ds_era5.time, ds_era5.relative_humidity,                     color='C2', label='ERA5 2 m',   linewidth=0.8, linestyle='--')
-axs[3].plot(ds_L3.time,       ds_L3.solar_radiation_downwards,           color='C3', label='SAFARI SR30/ASIMET', linewidth=0.8)
+axs[3].plot(ds_L3.time,       ds_L3.solar_radiation_downwards,           color='C3', label='SAFARI', linewidth=0.8)
 axs[3].plot(ds_era5_rad.time, ds_era5_rad.solar_radiation_downwards,   color='C3', label='ERA5',              linewidth=0.8, linestyle='--')
 
 axs[0].set_ylabel('Wind Speed (m/s)')
@@ -135,22 +131,22 @@ fig, axs = plt.subplots(3, 2, figsize=(7, 9))
 fig.suptitle('ERA5 vs SAFARI (hourly)', fontsize=10)
 
 scatter_with_stats(axs[0, 0], ds_flux.wind_speed_10_meters,               e5.wind_speed,
-                   'Wind Speed',  'SAFARI 10 m (m/s)',   'ERA5 10 m (m/s)',   'm/s')
+                   'Wind Speed',  'Buoy 10 m (m/s)',   'ERA5 10 m (m/s)',   'm/s')
 scatter_with_stats(axs[0, 1], ds_flux.air_temperature_at_reference_height, e5.air_temperature,
-                   'Air Temp',    'SAFARI 3 m (°C)',     'ERA5 2 m (°C)',      '°C')
+                   'Air Temp',    'Buoy 3 m (°C)',     'ERA5 2 m (°C)',      '°C')
 scatter_with_stats(axs[1, 0], ds_flux.relative_humidity_at_reference_height, e5.relative_humidity,
-                   'Rel. Hum.',   'SAFARI 3 m (%)',      'ERA5 2 m (%)',       '%')
+                   'Rel. Hum.',   'Buoy 3 m (%)',      'ERA5 2 m (%)',       '%')
 scatter_with_stats(axs[1, 1], ds_flux.air_pressure_10_meters,              e5.barometric_pressure,
-                   'Air Pressure','SAFARI 10 m (mb)',    'ERA5 (mb)',          'mb')
+                   'Air Pressure','Buoy 10 m (mb)',    'ERA5 (mb)',          'mb')
 
 # Radiation: align centered ERA5 to SAFARI L3 time grid
 ds_era5_rad_aligned = ds_era5_rad.interp(time=ds_L3.time)
 scatter_with_stats(axs[2, 0], ds_L3.solar_radiation_downwards,             ds_era5_rad_aligned.solar_radiation_downwards,
-                   'Solar Rad.',  'SAFARI (W/m²)',       'ERA5 (W/m²)',        'W/m²')
+                   'Solar Rad.',  'Buoy (W/m²)',       'ERA5 (W/m²)',        'W/m²')
 # SST is instantaneous — use unshifted ERA5
 e5_L3 = ds_era5.interp(time=ds_L3.time)
 scatter_with_stats(axs[2, 1], ds_L3.sea_surface_temperature,               e5_L3.skin_temperature,
-                   'SST',         'SAFARI SBE37 (°C)',   'ERA5 skin temp (°C)', '°C')
+                   'SST',         'Buoy SST(°C)',   'ERA5 skin temp (°C)', '°C')
 
 plt.tight_layout()
 if savefig:
@@ -161,9 +157,9 @@ if savefig:
 e5_wave = ds_era5.interp(time=ds_L3.time)
 fig, axs = plt.subplots(1, 2, figsize=(7, 4))
 scatter_with_stats(axs[0], ds_L3.longwave_radiation_downwards, ds_era5_rad_aligned.longwave_radiation_downwards,
-                   'LW Rad.',    'SAFARI ASIMET (W/m²)', 'ERA5 (W/m²)', 'W/m²')
+                   'LW Rad.',    'Buoy (W/m²)', 'ERA5 (W/m²)', 'W/m²')
 scatter_with_stats(axs[1], ds_L3.wave_height,                  e5_wave.wave_height,
-                   'Wave Height','SAFARI (m)',            'ERA5 (m)',    'm')
+                   'Wave Height','Buoy (m)',            'ERA5 (m)',    'm')
 fig.suptitle('ERA5 vs SAFARI', fontsize=10)
 plt.tight_layout()
 if savefig:

@@ -52,15 +52,15 @@ ASIMET = load_json_url('https://uop.whoi.edu/currentprojects/SAFARI/data/SAFARI_
 CR6 = load_json_url('https://uop.whoi.edu/currentprojects/SAFARI/data/SAFARI_buoy.json', verify_ssl=False)
 
 # %%
-t0 = datetime.datetime(2025,11,21) # SAFARI buoy deployed from R/V Sikuliaq at this time
+t0 = datetime.datetime(2025,11,21,0,30) # center of first 1-hr averaging period (UTC)
 
 # get timestamps for Campbell and ASIMET datasets
-ctime = np.array([ datetime.datetime.fromtimestamp(t).replace(minute=0,second=0,microsecond=0) for t in CR6['MET']['time'] ])
-atime = np.array([ datetime.datetime.fromtimestamp(t).replace(minute=0,second=0,microsecond=0) for t in ASIMET['ASIMET']['time'] ])
-wave_time = np.array([ datetime.datetime.fromtimestamp(t).replace(minute=0,second=0,microsecond=0) for t in CR6['FF']['time'] ])
+ctime     = np.array([ datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc).replace(tzinfo=None, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=30) for t in CR6['MET']['time'] ])
+atime     = np.array([ datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc).replace(tzinfo=None, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=30) for t in ASIMET['ASIMET']['time'] ])
+wave_time = np.array([ datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc).replace(tzinfo=None, minute=0, second=0, microsecond=0) + datetime.timedelta(minutes=30) for t in CR6['FF']['time'] ])
 
 # define preferred sensors
-time = np.arange(t0,datetime.datetime.now(),datetime.timedelta(hours=1)).astype(datetime.datetime)
+time = np.arange(t0,datetime.datetime.now(tz=datetime.timezone.utc).replace(tzinfo=None),datetime.timedelta(hours=1)).astype(datetime.datetime)
 
 # %%
 def select_sensor(time,primary_time,primary_var,secondary_time = None,secondary_var = None):
@@ -144,7 +144,7 @@ input_var_names = ['U', 't', 'rh', 'P', 'ts', 'sw', 'lw', 'lat', 'lon', 'cond', 
 
 # %%
 # Plot all input variables to check for any obvious issues
-fig, axes = plt.subplots(len(input_vars), 1, figsize=(12, 20), sharex=True)
+fig, axes = plt.subplots(len(input_vars), 1, figsize=(9,12), sharex=True)
 for var, name, ax in zip(input_vars, input_var_names, axes):
   ax.plot(time, var)
   ax.set_title(name)
@@ -173,7 +173,7 @@ for i, var in enumerate(input_vars):
   
 # %%
 # Plot all input variables again to check that nans have been interpolated
-fig, axes = plt.subplots(len(input_vars), 1, figsize=(12, 20), sharex=True)
+fig, axes = plt.subplots(len(input_vars), 1, figsize=(9,12), sharex=True)
 for var, name, ax in zip(input_vars, input_var_names, axes):
   ax.plot(time, var, label='Interpolated')
   # Also plot original variable with nans for comparison
@@ -221,7 +221,7 @@ for i, name in enumerate(output_var_names):
 ds.attrs["description"] = "SAFARI Mooring Fluxes computed using COARE 3.6 bulk flux algorithm"
 ds.attrs["source"] = "SAFARI Mooring"
 ds.attrs["contact"] = "Tom Farrar (jfarrar@whoi.edu) and Drew Lucas (ajlucas@ucsd.edu)"
-ds.attrs["created_on"] = datetime.datetime.now().isoformat()
+ds.attrs["created_on"] = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 ds.attrs["funding"] = "SAFARI project funded by the US Office of Naval Research (ONR)"
 
 out_path = os.path.join(home_dir, "Python/SAFARI_mooring/data/SAFARI_fluxes.nc")
@@ -257,7 +257,7 @@ for name, (data, attrs) in L3_vars.items():
 ds_L3.attrs['description'] = 'SAFARI Mooring L3 met inputs used for COARE 3.6 bulk flux algorithm'
 ds_L3.attrs['source'] = 'SAFARI Mooring'
 ds_L3.attrs['contact'] = 'Tom Farrar (jfarrar@whoi.edu) and Drew Lucas (ajlucas@ucsd.edu)'
-ds_L3.attrs['created_on'] = datetime.datetime.now().isoformat()
+ds_L3.attrs['created_on'] = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 ds_L3.attrs['funding'] = 'SAFARI project funded by the US Office of Naval Research (ONR)'
 
 encoding_L3 = {}
@@ -327,6 +327,47 @@ plt.ylabel('[mm/hr]')
 plt.xlabel('')
 
 plt.suptitle('SAFARI Mooring Met and evaporation')
+# %% 8-panel met/flux/stability plot
+fig, axes = plt.subplots(8, 1, figsize=(8, 11), sharex=True)
+axes[0].plot(ds['time'], ds['wind_speed_at_reference_height'], label='10m wind speed')
+axes[0].set_ylabel('[m/s]')
+axes[0].legend()
+axes[1].plot(wave_time, CR6['FF']['Hs_fft'], label='Wave height')
+axes[1].set_ylabel('[m]')
+axes[1].legend()
+axes[2].plot(ds.time, P, label='Air pressure')
+axes[2].set_ylabel('[mbar]')
+axes[2].legend()
+axes[3].plot(ds.time, ts, label='SST')
+axes[3].plot(ds['time'], ds['air_temperature_at_reference_height'], label='Air Temp at ' + str(zrft) + 'm')
+axes[3].set_ylabel('[$^\circ$C]')
+axes[3].legend()
+axes[4].plot(ds['time'], ds['relative_humidity_at_reference_height'], label='Humidity at ' + str(zrfq) + 'm')
+axes[4].set_ylabel('[%]')
+axes[4].legend()
+axes[5].plot(ds.time, rain, label='Rain Rate')
+axes[5].set_ylabel('[mm/hr]')
+axes[5].legend()
+axes[6].plot(ds['time'], ds['evaporation_rate'], label='Evaporation Rate')
+axes[6].set_ylabel('[mm/hr]')
+axes[6].legend()
+zL = 10 / ds['obukhov_length']
+axes[7].plot(ds['time'], zL, color='k', lw=0.6)
+axes[7].fill_between(ds['time'].values, zL.values, 0, where=(zL.values < 0), color='tab:red', alpha=0.5)
+axes[7].fill_between(ds['time'].values, zL.values, 0, where=(zL.values > 0), color='tab:blue', alpha=0.5)
+axes[7].axhline(0, color='k', lw=0.5, ls='--')
+axes[7].set_ylim(-2, 2)
+axes[7].text(ds['time'].values[2], 1.5, 'stable', fontsize=7, va='center', color='tab:blue')
+axes[7].text(ds['time'].values[2], -1.5, 'unstable', fontsize=7, va='center', color='tab:red')
+axes[7].text(ds['time'].values[2], 0.1, 'neutral', fontsize=7, va='bottom', color='tab:gray')
+axes[7].text(ds['time'].values[2], -0.1, 'neutral', fontsize=7, va='top', color='tab:gray')
+axes[7].set_ylabel('10/L')
+for ax in axes:
+    ax.set_xlabel('')
+fig.autofmt_xdate()
+plt.suptitle('SAFARI Mooring Met, evaporation, and stability')
+plt.tight_layout()
+plt.show()
 # %%
 plt.figure()
 plt.plot(wave_time, CR6['FF']['Hs_fft'])
@@ -336,5 +377,24 @@ plt.title('SAFARI Mooring Wave Height (Hs fft)')
 plt.grid()
 plt.tight_layout()
 plt.gcf().autofmt_xdate()
+plt.show()
+
+# %% Plot 10/L (stability parameter)
+L = ds['obukhov_length']
+zL = 10 / L
+fig, ax = plt.subplots(1, 1, figsize=(7, 3))
+ax.plot(ds['time'], zL, color='k', lw=0.6)
+ax.fill_between(ds['time'].values, zL.values, 0, where=(zL.values < 0), color='tab:red', alpha=0.5)
+ax.fill_between(ds['time'].values, zL.values, 0, where=(zL.values > 0), color='tab:blue', alpha=0.5)
+ax.axhline(0, color='k', lw=0.5, ls='--')
+ax.set_ylim(-2, 2)
+ax.text(ds['time'].values[2], 1.5, 'stable', fontsize=7, va='center', color='tab:blue')
+ax.text(ds['time'].values[2], -1.5, 'unstable', fontsize=7, va='center', color='tab:red')
+ax.text(ds['time'].values[2], 0.1, 'neutral', fontsize=7, va='bottom', color='tab:gray')
+ax.text(ds['time'].values[2], -0.1, 'neutral', fontsize=7, va='top', color='tab:gray')
+ax.set_ylabel('10/L')
+ax.set_title('SAFARI Mooring ABL stability (z/L)')
+fig.autofmt_xdate()
+plt.tight_layout()
 plt.show()
 # %%
