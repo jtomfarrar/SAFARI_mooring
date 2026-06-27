@@ -25,10 +25,17 @@ import ssl
 import xarray as xr
 from coare36_variables_config import get_variables_info
 import matplotlib.pyplot as plt
+from pathlib import Path
 # %%
 %matplotlib widget
 plt.rcParams['figure.dpi'] = 100
 plt.rcParams['savefig.dpi'] = 400
+
+__figdir__ = Path('../img/')
+__figdir__.mkdir(parents=True, exist_ok=True)
+savefig_args = {'bbox_inches': 'tight', 'pad_inches': 0.2}
+plotfiletype = 'png'
+savefig = True
 
 # %%
 def _ssl_context():
@@ -126,16 +133,24 @@ lw   = select_sensor(time,atime,ASIMET['ASIMET']['lwr'])
 lat  = select_sensor(time,ctime,CR6['MET']['latitude'])
 lon  = select_sensor(time,ctime,CR6['MET']['longitude'])
 cond = select_sensor(time,ctime,CR6['MET']['SBE37_cond'],atime,ASIMET['ASIMET']['cond'])
+cond = cond * 10 # convert S/m to mS/cm for use in GSW library
 stmp = select_sensor(time,ctime,CR6['MET']['SBE37_temp'],atime,ASIMET['ASIMET']['stmp'])
 jd   = 0
 zi   = 600
 rain = select_sensor(time,atime,rain_rate(np.array(ASIMET['ASIMET']['prc'])))
 with np.printoptions(threshold=np.inf):
   print(rain)
-Ss   = gsw.SP_from_C( cond, stmp, 0 )
+Ss   = gsw.SP_from_C(cond, stmp, 0)
 zrfu = 10.0 # Reference height for wind [m]
-zrft = 3 # Reference height for temperature [m]
-zrfq = 3 # Reference height for humidity [m]
+zrft = 2 # Reference height for temperature [m]
+zrfq = 2 # Reference height for humidity [m]
+
+# Basic QC: zero wind speeds are invalid and should be interpolated over for flux calculations
+zero_wind = U == 0
+if zero_wind.any():
+  U = U.copy()
+  U[zero_wind] = np.nan
+  print(f"Set {zero_wind.sum()} zero wind speed values to NaN")
 
 # %%
 # Before estimating fluxes, check inputs for nans
@@ -230,7 +245,16 @@ ds.to_netcdf(out_path)
 # %% Save L3 met inputs
 # Use original_input_vars (NaN-preserving, before interpolation)
 U_orig, t_orig, rh_orig, P_orig, ts_orig, sw_orig, lw_orig, lat_orig, lon_orig, cond_orig, stmp_orig, rain_orig, Ss_orig = original_input_vars
-Hs = select_sensor(time, wave_time, CR6['FF']['Hs_fft'])
+Hs = (
+    xr.DataArray(
+        np.array(CR6['FF']['Hs_fft'], dtype=float),
+        dims=('time',),
+        coords={'time': wave_time},
+    )
+    .sortby('time')
+    .interp(time=time)
+    .values
+)
 
 L3_vars = {
     'wind_speed':                 (U_orig,    {'long_name': 'wind speed',                      'units': 'm/s',          'sensor_height': '3.4 m'}),
@@ -285,9 +309,13 @@ plt.title('SAFARI Mooring Fluxes')
 #plt.gcf().autofmt_xdate()
 plt.ylabel('Flux (W/m^2)')
 plt.grid()
+plt.tight_layout()
+if savefig:
+  plt.savefig(__figdir__ / f'SAFARI_realtime_fluxes.{plotfiletype}', **savefig_args)
 plt.show()
 
 # %%
+# 7-panel met/evaporation plot
 fig, axes = plt.subplots(7, 1, figsize=(8, 10), sharex=True)
 plt.subplot(7,1,1)
 ds['wind_speed_at_reference_height'].plot(label='10m wind speed')
@@ -327,6 +355,10 @@ plt.ylabel('[mm/hr]')
 plt.xlabel('')
 
 plt.suptitle('SAFARI Mooring Met and evaporation')
+plt.tight_layout()
+if savefig:
+  plt.savefig(__figdir__ / f'SAFARI_realtime_met_evaporation.{plotfiletype}', **savefig_args)
+plt.show()
 # %% 8-panel met/flux/stability plot
 fig, axes = plt.subplots(8, 1, figsize=(8, 11), sharex=True)
 axes[0].plot(ds['time'], ds['wind_speed_at_reference_height'], label='10m wind speed')
@@ -367,6 +399,8 @@ for ax in axes:
 fig.autofmt_xdate()
 plt.suptitle('SAFARI Mooring Met, evaporation, and stability')
 plt.tight_layout()
+if savefig:
+    plt.savefig(__figdir__ / f'SAFARI_realtime_met_evaporation_stability.{plotfiletype}', **savefig_args)
 plt.show()
 # %%
 plt.figure()
@@ -377,6 +411,8 @@ plt.title('SAFARI Mooring Wave Height (Hs fft)')
 plt.grid()
 plt.tight_layout()
 plt.gcf().autofmt_xdate()
+if savefig:
+  plt.savefig(__figdir__ / f'SAFARI_realtime_wave_height.{plotfiletype}', **savefig_args)
 plt.show()
 
 # %% Plot 10/L (stability parameter)
@@ -396,5 +432,6 @@ ax.set_ylabel('10/L')
 ax.set_title('SAFARI Mooring ABL stability (z/L)')
 fig.autofmt_xdate()
 plt.tight_layout()
+if savefig:
+  plt.savefig(__figdir__ / f'SAFARI_realtime_stability.{plotfiletype}', **savefig_args)
 plt.show()
-# %%
