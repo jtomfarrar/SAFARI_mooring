@@ -16,6 +16,8 @@ from pathlib import Path
 # Set working directory
 home_dir = Path.home()
 os.chdir(home_dir / 'Python/SAFARI_mooring/src')
+sys.path.insert(0, str(home_dir / 'Python/SAFARI_mooring'))
+import functions
 
 # %%
 ip = get_ipython() if "get_ipython" in globals() else None
@@ -30,7 +32,7 @@ __figdir__ = Path('../img/')
 __figdir__.mkdir(parents=True, exist_ok=True)
 savefig_args = {'bbox_inches': 'tight', 'pad_inches': 0.2}
 plotfiletype = 'png'
-savefig = False
+savefig = True
 
 # %% Load data
 data_dir = home_dir / 'Python/SAFARI_mooring/data'
@@ -58,7 +60,8 @@ net_heat_flux.attrs = {
 }
 
 # %% Add buoy surface T/S and estimate mixed layer depth
-mld_density_threshold = 0.5
+mld_density_threshold = 0.25
+sigma0_isopycnal = 25.65
 mean_lat = float(ds_met.latitude.mean(skipna=True))
 mean_lon = float(ds_met.longitude.mean(skipna=True))
 
@@ -93,8 +96,19 @@ pressure_mat = np.tile(ds_ww_aug.pressure.values[:, np.newaxis], (1, ds_ww_aug.s
 SA = gsw.SA_from_SP(ds_ww_aug.salinity.values, pressure_mat, mean_lon, mean_lat)
 CT = gsw.CT_from_t(SA, ds_ww_aug.temperature.values, pressure_mat)
 sigma0 = gsw.sigma0(SA, CT)
+ds_ww_aug['sigma0'] = xr.DataArray(
+    sigma0,
+    dims=('depth', 'time'),
+    coords={'depth': ds_ww_aug.depth, 'time': ds_ww_aug.time},
+    attrs={
+        'long_name': 'potential density anomaly referenced to sea surface',
+        'units': 'kg m-3',
+        'description': 'gsw.sigma0(SA, CT), potential density anomaly referenced to 0 dbar',
+    },
+)
 
 mld = np.full(ds_ww_aug.sizes['time'], np.nan)
+H_isopycnal = np.full(ds_ww_aug.sizes['time'], np.nan)
 depth = ds_ww_aug.depth.values
 surface_sigma0 = sigma0[0, :]
 for i in range(ds_ww_aug.sizes['time']):
@@ -102,6 +116,22 @@ for i in range(ds_ww_aug.sizes['time']):
         crossing = np.where(sigma0[:, i] >= surface_sigma0[i] + mld_density_threshold)[0]
         if len(crossing) > 0:
             mld[i] = depth[crossing[0]]
+
+    valid = np.isfinite(sigma0[:, i])
+    if valid.sum() >= 2:
+        valid_depth = depth[valid]
+        valid_sigma0 = sigma0[:, i][valid]
+        crossing = np.where(valid_sigma0 >= sigma0_isopycnal)[0]
+        if len(crossing) > 0:
+            crossing_index = crossing[0]
+            if crossing_index == 0:
+                H_isopycnal[i] = valid_depth[0]
+            else:
+                H_isopycnal[i] = np.interp(
+                    sigma0_isopycnal,
+                    valid_sigma0[crossing_index - 1:crossing_index + 1],
+                    valid_depth[crossing_index - 1:crossing_index + 1],
+                )
 
 ds_ww_aug['mixed_layer_depth'] = xr.DataArray(
     mld,
@@ -114,9 +144,21 @@ ds_ww_aug['mixed_layer_depth'] = xr.DataArray(
         'description': 'First depth where sigma0 exceeds surface sigma0 by density_threshold kg m-3',
     },
 )
+ds_ww_aug['H_isopycnal'] = xr.DataArray(
+    H_isopycnal,
+    dims=('time',),
+    coords={'time': ds_ww_aug.time},
+    attrs={
+        'long_name': f'depth of sigma0 = {sigma0_isopycnal:g} isopycnal',
+        'units': 'm',
+        'sigma0_isopycnal': sigma0_isopycnal,
+        'description': f'Linearly interpolated first downward crossing of sigma0 = {sigma0_isopycnal:g}',
+    },
+)
 
 print(f'Mean position for GSW: {mean_lat:.4f} degN, {mean_lon:.4f} degE')
 print(f'MLD finite profiles: {np.isfinite(mld).sum()} of {len(mld)}')
+print(f'H_isopycnal finite profiles: {np.isfinite(H_isopycnal).sum()} of {len(H_isopycnal)}')
 
 print(f'Flux time range: {ds_flux.time.values[0]} to {ds_flux.time.values[-1]}')
 print(f'Wirewalker time range: {ds_ww.time.values[0]} to {ds_ww.time.values[-1]}')
@@ -130,12 +172,22 @@ h = 150
 rho = 1025
 cp = 3990
 seconds_per_day = 86400
-budget_smoothing_days = 14
+budget_smoothing_days = 3
 budget_smoothing_hours = int(budget_smoothing_days * 24)
 
 
 def smooth_budget_term(da):
-    return da.rolling(time=budget_smoothing_hours, center=True).mean()
+    win = 'parzen'
+    smoothed_values, N_actual = functions.smooth1d(
+        da.values, budget_smoothing_hours, win=win, cutoff='power', oddflag=1, edgeflag=1
+    )
+    attrs = da.attrs.copy()
+    attrs['smoothing_function'] = 'functions.smooth1d'
+    attrs['smoothing_N'] = budget_smoothing_hours
+    attrs['smoothing_N_actual'] = N_actual
+    attrs['smoothing_window'] = win
+    attrs['smoothing_cutoff'] = 'power'
+    return xr.DataArray(smoothed_values, dims=da.dims, coords=da.coords, attrs=attrs, name=da.name)
 
 
 # Average duplicate Wirewalker timestamps before interpolation; xarray requires
@@ -236,7 +288,7 @@ ds_budget.Qsum.attrs = {'long_name': 'sum of surface flux, penetrating shortwave
 # entr = That_minusH2 * diff(H2) / 3600 / H2 was used as an entrainment-like term.
 # These are intentionally deferred until the A/E comparison is checked.
 
-# %% MLD-following temperature budget
+# %% ML temperature budget
 ds_budget_mld = xr.Dataset(coords={'time': ds_flux.time})
 ds_budget_mld['H2'] = ds_ww_budget.mixed_layer_depth
 ds_budget_mld.H2.attrs = {
@@ -352,8 +404,8 @@ ds_budget_mld.Qsum.attrs = {
     'units': 'degree_C s-1',
 }
 
-# %% MLD-following temperature error budget
-delHonH = 0.08
+# %% ML temperature balance error budget
+delHonH = 0.02
 delTinstr = 0.01
 delQ = 8
 delta_t = 3600
@@ -407,6 +459,36 @@ ds_budget_mld.er_Qsum.attrs = {
     'units': 'degree_C s-1',
 }
 
+
+# %% Plot potential density referenced to surface
+depth_max = 200
+ds_ww_upper = ds_ww_aug.sel(depth=slice(0, depth_max))
+
+fig, ax = plt.subplots(figsize=(9, 4))
+
+pcm = ax.pcolormesh(ds_ww_upper.time, ds_ww_upper.depth, ds_ww_upper.sigma0, cmap='viridis', vmin = 24.20, vmax = 25.75, shading='auto')
+time_contour = mdates.date2num(ds_ww_upper.time.values)
+sigma0_contour = np.ma.masked_invalid(ds_ww_upper.sigma0.values)
+ax.contour(
+    time_contour, ds_ww_upper.depth.values, sigma0_contour,
+    levels=[sigma0_isopycnal], colors='w', linewidths=1.0, linestyles='--',
+)
+ax.plot(ds_ww_aug.time, ds_ww_aug.H_isopycnal, color='k', linewidth=1.2, label='H_isopycnal')
+ax.plot([], [], color='w', linewidth=1.0, linestyle='--', label=f'$\\sigma_0$ = {sigma0_isopycnal:g} contour')
+ax.set_ylim(depth_max, 0)
+ax.set_ylabel('Depth (m)')
+ax.grid()
+ax.legend(fontsize=8, loc='lower right')
+ax.set_xlim(t_start, t_end)
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+plt.colorbar(pcm, ax=ax, label='$\\sigma_0$ (kg m$^{-3}$)')
+fig.autofmt_xdate()
+fig.suptitle('SAFARI Potential Density Referenced to Surface', y=0.98)
+plt.tight_layout()
+if savefig:
+    plt.savefig(__figdir__ / f'SAFARI_sigma0_depth_time.{plotfiletype}', **savefig_args)
+
 # %% Plot heat fluxes, wind stress, and upper-ocean T/S
 depth_max = 200
 ds_ww_upper = ds_ww_aug.sel(depth=slice(0, depth_max))
@@ -426,14 +508,21 @@ caxs = np.array([fig.add_subplot(gs[i, 1]) for i in range(4)])
 for cax in caxs[:2]:
     cax.set_visible(False)
 
-axs[0].plot(ds_flux.time, net_heat_flux, color='k', linewidth=1.4, label='Net')
+net_heat_flux_smooth_days = 3
+net_heat_flux_smooth_hours = int(net_heat_flux_smooth_days * 24)
+net_heat_flux_smooth, _ = functions.smooth1d(
+    net_heat_flux.values, net_heat_flux_smooth_hours, win='parzen', cutoff='power', oddflag=1, edgeflag=1
+)
+
 axs[0].plot(ds_flux.time, ds_flux.sensible_heat_flux, color='C1', linewidth=1.0, label='Sensible')
 axs[0].plot(ds_flux.time, ds_flux.latent_heat_flux, color='C0', linewidth=1.0, label='Latent')
 axs[0].plot(ds_flux.time, ds_flux.net_solar_radiation, color='C3', linewidth=1.0, label='Net shortwave')
 axs[0].plot(ds_flux.time, ds_flux.net_longwave_radiation, color='C4', linewidth=1.0, label='Net longwave')
-axs[0].axhline(0, color='0.4', linewidth=0.8)
+axs[0].plot(ds_flux.time, net_heat_flux, color='k', linewidth=1.4, label='Net', zorder=4)
+axs[0].plot(ds_flux.time, net_heat_flux_smooth, color='m', linewidth=2.2, label='Net, 3-day smooth', zorder=5)
+axs[0].axhline(0, color='0.4', linewidth=0.8, zorder=0)
 axs[0].set_ylabel('Heat flux\n(W m$^{-2}$)')
-axs[0].legend(ncol=5, fontsize=7, loc='upper right')
+axs[0].legend(ncol=6, fontsize=7, loc='upper right')
 axs[0].grid()
 
 axs[1].plot(ds_flux.time, ds_flux.wind_stress, color='C2', linewidth=1.1)
@@ -462,7 +551,7 @@ plt.colorbar(pcm1, cax=caxs[3], label='Salinity (psu)')
 axs[3].xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
 axs[3].xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
 fig.autofmt_xdate()
-fig.suptitle('SAFARI Ocean Heat Budget Overview', y=0.98)
+#fig.suptitle('SAFARI Ocean Heat Budget Overview', y=0.98)
 axs[0].set_xlim(t_start, t_end)
 if savefig:
     plt.savefig(__figdir__ / f'SAFARI_ocean_heat_budget_overview.{plotfiletype}', **savefig_args)
@@ -477,10 +566,9 @@ Qterm_plus_Qpen_plot = smooth_budget_term(ds_budget.Qterm_plus_Qpen * seconds_pe
 QminusH_plot = smooth_budget_term(ds_budget.QminusH * seconds_per_day)
 Qsum_plot = smooth_budget_term(ds_budget.Qsum * seconds_per_day)
 
-ax.plot(ds_budget.time, Tt_plot, color='k', linewidth=1.4, label=r'dTbar/dt')
+ax.plot(ds_budget.time, Tt_plot, color='k', linewidth=1.4, label=r'dT/dt')
 ax.plot(ds_budget.time, Qterm_plot, color='C0', linewidth=1.2, label='Surface flux')
-ax.plot(ds_budget.time, Qterm_plus_Qpen_plot, color='C3', linewidth=1.2, label='Surface flux + penetrating solar')
-ax.plot(ds_budget.time, QminusH_plot, color='C2', linewidth=1.1, label='vertical diffusion')
+#ax.plot(ds_budget.time, QminusH_plot, color='C2', linewidth=1.1, label='vertical diffusion')
 ax.plot(ds_budget.time, Qsum_plot, color='0.4', linewidth=1.4, linestyle='--', label='sum RHS')
 ax.axhline(0, color='0.4', linewidth=0.8)
 ax.set_ylabel('Temperature tendency\n($^\\circ$C day$^{-1}$)')
@@ -495,7 +583,7 @@ if savefig:
     plt.savefig(__figdir__ / f'SAFARI_fixed_depth_heat_budget.{plotfiletype}', **savefig_args)
 
 
-# %% Plot MLD-following temperature budget
+# %% Plot ML temperature balance
 fig, ax = plt.subplots(figsize=(9, 4))
 
 Tt_mld_plot = smooth_budget_term(ds_budget_mld.Tt * seconds_per_day)
@@ -515,16 +603,14 @@ errorbar_args = {
 }
 
 ax.errorbar(time_mld_plot, Tt_mld_plot.values, yerr=(ds_budget_mld.er_Tt * seconds_per_day).values,
-            fmt='-', color='k', linewidth=1.4, label=r'dTbar/dt',
+            fmt='-', color='k', linewidth=1.4, label=r'dT/dt',
             errorevery=(er_sum_start, er_skip), **errorbar_args)
 ax.errorbar(time_mld_plot, Qterm_mld_plot.values, yerr=(ds_budget_mld.er_Qterm * seconds_per_day).values,
             fmt='-', color='C0', linewidth=1.2, label='Surface flux',
             errorevery=(er_component_start, er_skip), **errorbar_args)
-ax.plot(time_mld_plot, Qterm_plus_Qpen_mld_plot.values, color='C3', linewidth=1.2,
-        label='Surface flux + penetrating solar')
-ax.errorbar(time_mld_plot, QminusH_mld_plot.values, yerr=(ds_budget_mld.er_QminusH * seconds_per_day).values,
-            fmt='-', color='C2', linewidth=1.1, label='vertical diffusion',
-            errorevery=(er_component_start, er_skip), **errorbar_args)
+##ax.errorbar(time_mld_plot, QminusH_mld_plot.values, yerr=(ds_budget_mld.er_QminusH * seconds_per_day).values,
+#            fmt='-', color='C2', linewidth=1.1, label='vertical diffusion',
+#            errorevery=(er_component_start, er_skip), **errorbar_args)
 ax.errorbar(time_mld_plot, entrainment_mld_plot.values,
             yerr=(ds_budget_mld.er_entrainment_tendency * seconds_per_day).values,
             fmt='-', color='m', linewidth=1.1, label='entrainment',
@@ -535,12 +621,342 @@ ax.errorbar(time_mld_plot, Qsum_mld_plot.values, yerr=(ds_budget_mld.er_Qsum * s
 ax.axhline(0, color='0.4', linewidth=0.8)
 ax.set_ylabel('Temperature tendency\n($^\\circ$C day$^{-1}$)')
 ax.grid()
+_legend_order = [r'dT/dt', 'Surface flux', 'entrainment', 'sum RHS']
+_h, _l = ax.get_legend_handles_labels()
+ax.legend([_h[_l.index(lb)] for lb in _legend_order], _legend_order, fontsize=8, loc='best')
+ax.set_xlim(t_start, t_end)
+_mld_ylim = ax.get_ylim()
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+fig.autofmt_xdate()
+fig.suptitle('SAFARI upper-layer temperature balance', y=0.98)
+plt.tight_layout()
+if savefig:
+    plt.savefig(__figdir__ / f'SAFARI_ml_temperature_balance.{plotfiletype}', **savefig_args)
+
+
+# %% Plot ML temperature balance - dT/dt only
+fig, ax = plt.subplots(figsize=(9, 4))
+
+ax.errorbar(time_mld_plot, Tt_mld_plot.values, yerr=(ds_budget_mld.er_Tt * seconds_per_day).values,
+            fmt='-', color='k', linewidth=1.4, label=r'dT/dt',
+            errorevery=(er_sum_start, er_skip), **errorbar_args)
+ax.plot([], [], color='C0', linewidth=1.2, label='Surface flux')
+ax.plot([], [], color='m', linewidth=1.1, label='entrainment')
+ax.plot([], [], color='0.4', linewidth=1.4, linestyle='--', label='sum RHS')
+ax.axhline(0, color='0.4', linewidth=0.8)
+ax.set_ylabel('Temperature tendency\n($^\\circ$C day$^{-1}$)')
+ax.grid()
+_h, _l = ax.get_legend_handles_labels()
+ax.legend([_h[_l.index(lb)] for lb in _legend_order], _legend_order, fontsize=8, loc='best')
+ax.set_xlim(t_start, t_end)
+ax.set_ylim(_mld_ylim)
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+fig.autofmt_xdate()
+fig.suptitle('SAFARI upper-layer temperature balance', y=0.98)
+plt.tight_layout()
+if savefig:
+    plt.savefig(__figdir__ / f'SAFARI_ml_temperature_balance_Tt_only.{plotfiletype}', **savefig_args)
+
+
+# %% Plot ML temperature balance - dT/dt and surface flux
+fig, ax = plt.subplots(figsize=(9, 4))
+
+ax.errorbar(time_mld_plot, Tt_mld_plot.values, yerr=(ds_budget_mld.er_Tt * seconds_per_day).values,
+            fmt='-', color='k', linewidth=1.4, label=r'dT/dt',
+            errorevery=(er_sum_start, er_skip), **errorbar_args)
+ax.errorbar(time_mld_plot, Qterm_mld_plot.values, yerr=(ds_budget_mld.er_Qterm * seconds_per_day).values,
+            fmt='-', color='C0', linewidth=1.2, label='Surface flux',
+            errorevery=(er_component_start, er_skip), **errorbar_args)
+ax.plot([], [], color='m', linewidth=1.1, label='entrainment')
+ax.plot([], [], color='0.4', linewidth=1.4, linestyle='--', label='sum RHS')
+ax.axhline(0, color='0.4', linewidth=0.8)
+ax.set_ylabel('Temperature tendency\n($^\\circ$C day$^{-1}$)')
+ax.grid()
+_h, _l = ax.get_legend_handles_labels()
+ax.legend([_h[_l.index(lb)] for lb in _legend_order], _legend_order, fontsize=8, loc='best')
+ax.set_xlim(t_start, t_end)
+ax.set_ylim(_mld_ylim)
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+fig.autofmt_xdate()
+fig.suptitle('SAFARI upper-layer temperature balance', y=0.98)
+plt.tight_layout()
+if savefig:
+    plt.savefig(__figdir__ / f'SAFARI_ml_temperature_balance_Tt_flux.{plotfiletype}', **savefig_args)
+
+
+
+
+
+# %% Compute gravitational potential energy per unit area
+# Reichl et al. (2022), Equation 8: Pg = integral rho g (z - z_r) dz.
+# The script uses depth positive downward, so z = -depth. Pg depends on the
+# arbitrary reference level z_r; here z_r is set to the sea surface.
+gravity = 9.81
+pe_reference_depth = 0
+
+
+
+def layer_potential_energy(depth, rho_profile, layer_depth, reference_depth=0):
+    """
+    Calculate gravitational potential energy per unit area for a single profile.
+
+    Parameters
+    ----------
+    depth : array-like
+        Depth in meters, positive downward.
+    rho_profile : array-like
+        In situ density in kg m-3 on the depth grid.
+    layer_depth : float
+        Lower integration limit in meters, positive downward.
+    reference_depth : float
+        Reference level in meters, positive downward.
+
+    Returns
+    -------
+    Pg : float
+        Gravitational potential energy per horizontal area in J m-2.
+    """
+    valid = np.isfinite(rho_profile)
+    valid_layer = np.isfinite(layer_depth) and layer_depth > 0 and valid.sum() >= 2
+    valid_depth_range = valid_layer and depth[valid][0] <= 0 and depth[valid][-1] >= layer_depth
+    if valid_depth_range:
+        valid_depth = depth[valid]
+        valid_rho = rho_profile[valid]
+        interior_depth = valid_depth[(valid_depth > 0) & (valid_depth < layer_depth)]
+        layer_depth_grid = np.sort(np.unique(np.append(interior_depth, [0, layer_depth])))
+        layer_rho = np.interp(layer_depth_grid, valid_depth, valid_rho)
+        z = -layer_depth_grid
+        z_ref = -reference_depth
+        return np.trapz(layer_rho[::-1] * gravity * (z[::-1] - z_ref), z[::-1])
+    return np.nan
+
+
+def layer_potential_energy_anomaly(depth, rho_theta_profile, upper_depth, lower_depth):
+    """
+    Calculate potential energy anomaly for a finite depth interval.
+
+    Parameters
+    ----------
+    depth : array-like
+        Depth in meters, positive downward.
+    rho_theta_profile : array-like
+        Potential density in kg m-3 on the depth grid.
+    upper_depth : float
+        Upper integration limit in meters, positive downward.
+    lower_depth : float
+        Lower integration limit in meters, positive downward.
+
+    Returns
+    -------
+    phi : float
+        Potential energy anomaly in J m-2.
+    """
+    layer_thickness = lower_depth - upper_depth
+    valid = np.isfinite(rho_theta_profile)
+    valid_layer = np.isfinite(upper_depth) and np.isfinite(lower_depth) and layer_thickness > 0 and valid.sum() >= 2
+    valid_depth_range = valid_layer and depth[valid][0] <= upper_depth and depth[valid][-1] >= lower_depth
+    if valid_depth_range:
+        valid_depth = depth[valid]
+        valid_rho_theta = rho_theta_profile[valid]
+        interior_depth = valid_depth[(valid_depth > upper_depth) & (valid_depth < lower_depth)]
+        layer_depth_grid = np.sort(np.unique(np.append(interior_depth, [upper_depth, lower_depth])))
+        layer_rho_theta = np.interp(layer_depth_grid, valid_depth, valid_rho_theta)
+        rho_theta_mixed = np.trapz(layer_rho_theta, layer_depth_grid) / layer_thickness
+        return np.trapz((rho_theta_mixed - layer_rho_theta) * gravity * (lower_depth - layer_depth_grid), layer_depth_grid)
+    return np.nan
+
+
+def layer_average_n2(depth, rho_theta_profile, upper_depth, lower_depth, reference_density=1025):
+    """
+    Calculate layer-average buoyancy frequency squared from potential density.
+
+    Parameters
+    ----------
+    depth : array-like
+        Depth in meters, positive downward.
+    rho_theta_profile : array-like
+        Potential density in kg m-3 on the depth grid.
+    upper_depth : float
+        Upper averaging limit in meters, positive downward.
+    lower_depth : float
+        Lower averaging limit in meters, positive downward.
+    reference_density : float
+        Reference density in kg m-3.
+
+    Returns
+    -------
+    n2bar : float
+        Layer-average buoyancy frequency squared in s-2.
+    """
+    layer_thickness = lower_depth - upper_depth
+    valid = np.isfinite(rho_theta_profile)
+    valid_layer = np.isfinite(upper_depth) and np.isfinite(lower_depth) and layer_thickness > 0 and valid.sum() >= 2
+    valid_depth_range = valid_layer and depth[valid][0] <= upper_depth and depth[valid][-1] >= lower_depth
+    if valid_depth_range:
+        valid_depth = depth[valid]
+        valid_rho_theta = rho_theta_profile[valid]
+        N2_profile = gravity / reference_density * np.gradient(valid_rho_theta, valid_depth)
+        interior_depth = valid_depth[(valid_depth > upper_depth) & (valid_depth < lower_depth)]
+        layer_depth_grid = np.sort(np.unique(np.append(interior_depth, [upper_depth, lower_depth])))
+        layer_N2 = np.interp(layer_depth_grid, valid_depth, N2_profile)
+        return np.trapz(layer_N2, layer_depth_grid) / layer_thickness
+    return np.nan
+
+
+pressure_budget_mat = np.tile(ds_ww_budget.pressure.values[:, np.newaxis], (1, ds_ww_budget.sizes['time']))
+SA_budget = gsw.SA_from_SP(ds_ww_budget.salinity.values, pressure_budget_mat, mean_lon, mean_lat)
+CT_budget = gsw.CT_from_t(SA_budget, ds_ww_budget.temperature.values, pressure_budget_mat)
+rho_insitu_budget = gsw.rho(SA_budget, CT_budget, pressure_budget_mat)
+rho_theta_budget = gsw.sigma0(SA_budget, CT_budget) + 1000
+
+Pg_fixed_depth = np.full(ds_ww_budget.sizes['time'], np.nan)
+Pg_mld = np.full(ds_ww_budget.sizes['time'], np.nan)
+phi_fixed_depth = np.full(ds_ww_budget.sizes['time'], np.nan)
+phi_mld = np.full(ds_ww_budget.sizes['time'], np.nan)
+n2bar_mld = np.full(ds_ww_budget.sizes['time'], np.nan)
+phi_mld_half_width = 5
+n2_mld_half_width = 5
+phi_mld_upper_depth = H2 - phi_mld_half_width
+phi_mld_lower_depth = H2 + phi_mld_half_width
+n2_mld_upper_depth = H2 - n2_mld_half_width
+n2_mld_lower_depth = H2 + n2_mld_half_width
+for i in range(ds_ww_budget.sizes['time']):
+    Pg_fixed_depth[i] = layer_potential_energy(depth_grid, rho_insitu_budget[:, i], h, pe_reference_depth)
+    Pg_mld[i] = layer_potential_energy(depth_grid, rho_insitu_budget[:, i], H2[i], pe_reference_depth)
+    phi_fixed_depth[i] = layer_potential_energy_anomaly(depth_grid, rho_theta_budget[:, i], 0, h)
+    phi_mld[i] = layer_potential_energy_anomaly(
+        depth_grid, rho_theta_budget[:, i], phi_mld_upper_depth[i], phi_mld_lower_depth[i]
+    )
+    n2bar_mld[i] = layer_average_n2(depth_grid, rho_theta_budget[:, i], n2_mld_upper_depth[i], n2_mld_lower_depth[i], rho)
+
+ds_pe = xr.Dataset(coords={'time': ds_ww_budget.time})
+ds_pe['Pg_fixed_depth'] = xr.DataArray(
+    Pg_fixed_depth,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={
+        'long_name': f'gravitational potential energy per unit area, 0-{h:g} m',
+        'units': 'J m-2',
+        'reference_depth': pe_reference_depth,
+        'description': 'Reichl et al. (2022), Eq. 8, using in situ density and z = -depth',
+    },
+)
+ds_pe['phi_fixed_depth'] = xr.DataArray(
+    phi_fixed_depth,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={
+        'long_name': f'potential energy anomaly, 0-{h:g} m',
+        'units': 'J m-2',
+        'description': 'Reichl et al. (2022), Eq. 14, using potential density',
+    },
+)
+ds_pe['phi_mld'] = xr.DataArray(
+    phi_mld,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={
+        'long_name': 'potential energy anomaly, MLD +/- 5 m',
+        'units': 'J m-2',
+        'description': f'Potential energy anomaly over the H2 +/- {phi_mld_half_width:g} m interval, using potential density',
+    },
+)
+ds_pe['Pg_mld'] = xr.DataArray(
+    Pg_mld,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={
+        'long_name': 'gravitational potential energy per unit area, 0-MLD',
+        'units': 'J m-2',
+        'reference_depth': pe_reference_depth,
+        'description': 'Reichl et al. (2022), Eq. 8, using in situ density and z = -depth',
+    },
+)
+ds_pe['phi_mld_upper_depth'] = xr.DataArray(
+    phi_mld_upper_depth,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={'long_name': 'upper depth for MLD potential energy anomaly', 'units': 'm'},
+)
+ds_pe['phi_mld_lower_depth'] = xr.DataArray(
+    phi_mld_lower_depth,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={'long_name': 'lower depth for MLD potential energy anomaly', 'units': 'm'},
+)
+ds_pe['N2bar_mld'] = xr.DataArray(
+    n2bar_mld,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={
+        'long_name': 'average buoyancy frequency squared around MLD',
+        'units': 's-2',
+        'description': 'Average N^2 over the H2 - X m to H2 + X m interval',
+        'half_width': n2_mld_half_width,
+    },
+)
+ds_pe['n2_mld_upper_depth'] = xr.DataArray(
+    n2_mld_upper_depth,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={'long_name': 'upper depth for MLD N2 average', 'units': 'm'},
+)
+ds_pe['n2_mld_lower_depth'] = xr.DataArray(
+    n2_mld_lower_depth,
+    dims=('time',),
+    coords={'time': ds_pe.time},
+    attrs={'long_name': 'lower depth for MLD N2 average', 'units': 'm'},
+)
+ds_pe['Nbar_mld'] = np.sqrt(ds_pe.N2bar_mld.where(ds_pe.N2bar_mld >= 0))
+ds_pe.Nbar_mld.attrs = {
+    'long_name': 'buoyancy frequency around MLD',
+    'units': 's-1',
+    'description': 'sqrt of average N^2 over the H2 - X m to H2 + X m interval',
+    'half_width': n2_mld_half_width,
+}
+
+
+# %% Plot gravitational potential energy and potential energy anomaly
+fig, axs = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+
+axs[0].plot(ds_pe.time, ds_pe.Pg_fixed_depth, color='C0', linewidth=1.2, label=f'0-{h:g} m')
+axs[0].plot(ds_pe.time, ds_pe.Pg_mld, color='C1', linewidth=1.2, label='0-MLD')
+axs[0].set_ylabel('$P_g$\n(J m$^{-2}$)')
+axs[0].grid()
+axs[0].legend(fontsize=8, loc='best')
+
+axs[1].plot(ds_pe.time, ds_pe.phi_fixed_depth, color='C0', linewidth=1.2, label=f'0-{h:g} m')
+axs[1].plot(ds_pe.time, ds_pe.phi_mld, color='C1', linewidth=1.2, label='MLD +/- 5 m')
+axs[1].set_ylabel('$\\Phi$\n(J m$^{-2}$)')
+axs[1].grid()
+axs[1].legend(fontsize=8, loc='best')
+
+axs[1].set_xlim(t_start, t_end)
+axs[1].xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+axs[1].xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
+fig.autofmt_xdate()
+fig.suptitle('SAFARI Potential Energy Time Series', y=0.98)
+plt.tight_layout()
+if savefig:
+    plt.savefig(__figdir__ / f'SAFARI_potential_energy_timeseries.{plotfiletype}', **savefig_args)
+
+
+# %% Plot average N around mixed layer depth
+fig, ax = plt.subplots(figsize=(9, 4))
+
+ax.plot(ds_pe.time, ds_pe.Nbar_mld, color='C2', linewidth=1.2, label=f'MLD +/- {n2_mld_half_width:g} m')
+ax.axhline(0, color='0.4', linewidth=0.8)
+ax.set_ylabel('$N$\n(s$^{-1}$)')
+ax.grid()
 ax.legend(fontsize=8, loc='best')
 ax.set_xlim(t_start, t_end)
 ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
 ax.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0))
 fig.autofmt_xdate()
-fig.suptitle('SAFARI MLD-Following Heat Budget', y=0.98)
+fig.suptitle('SAFARI Buoyancy Frequency Around MLD', y=0.98)
 plt.tight_layout()
 if savefig:
-    plt.savefig(__figdir__ / f'SAFARI_mld_heat_budget.{plotfiletype}', **savefig_args)
+    plt.savefig(__figdir__ / f'SAFARI_mld_average_N.{plotfiletype}', **savefig_args)

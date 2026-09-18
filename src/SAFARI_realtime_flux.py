@@ -402,6 +402,95 @@ plt.tight_layout()
 if savefig:
     plt.savefig(__figdir__ / f'SAFARI_realtime_met_evaporation_stability.{plotfiletype}', **savefig_args)
 plt.show()
+
+# %% Focused met/flux plot
+plot_start = datetime.datetime(time[0].year, 11, 23)
+plot_end = datetime.datetime(time[0].year + 1, 2, 22)
+plot_window = (ds.time.values >= np.datetime64(plot_start)) & (ds.time.values <= np.datetime64(plot_end))
+
+
+def set_tight_ylim(ax, values, pad_fraction=0.05):
+  values = np.asarray(values)
+  values = values[np.isfinite(values)]
+  if len(values) > 0:
+    ymin = np.nanmin(values)
+    ymax = np.nanmax(values)
+    if ymin == ymax:
+      pad = 1
+    else:
+      pad = pad_fraction * (ymax - ymin)
+    ax.set_ylim(ymin - pad, ymax + pad)
+
+
+fig, axes = plt.subplots(4, 1, figsize=(8, 7), sharex=True)
+axes[0].plot(ds['time'], ds['wind_speed_at_reference_height'], label='10m wind speed')
+axes[0].set_ylabel('[m/s]')
+axes[0].legend()
+set_tight_ylim(axes[0], ds['wind_speed_at_reference_height'].values[plot_window])
+
+axes[1].plot(ds.time, ts, label='SST')
+axes[1].plot(ds['time'], ds['air_temperature_at_reference_height'], label='Air Temp at ' + str(zrft) + 'm')
+axes[1].set_ylabel('[$^\circ$C]')
+axes[1].legend()
+temperature_values = np.concatenate((ts[plot_window], ds['air_temperature_at_reference_height'].values[plot_window]))
+set_tight_ylim(axes[1], temperature_values)
+
+axes[2].plot(ds['time'], ds['relative_humidity_at_reference_height'], label='Humidity at ' + str(zrfq) + 'm')
+axes[2].set_ylabel('[%]')
+axes[2].legend()
+set_tight_ylim(axes[2], ds['relative_humidity_at_reference_height'].values[plot_window])
+
+axes[3].plot(ds['time'], ds['evaporation_rate'], label='Evaporation Rate')
+axes[3].set_ylabel('[mm/hr]')
+axes[3].legend()
+set_tight_ylim(axes[3], ds['evaporation_rate'].values[plot_window])
+
+for ax in axes:
+  ax.set_xlim(plot_start, plot_end)
+  ax.set_xlabel('')
+  ax.grid()
+fig.autofmt_xdate()
+plt.suptitle('SAFARI Mooring Focused Met and Evaporation')
+plt.tight_layout()
+if savefig:
+  plt.savefig(__figdir__ / f'SAFARI_realtime_focused_met_evaporation.{plotfiletype}', **savefig_args)
+plt.show()
+
+# %% Focused met/flux plot, full time range
+full_window = np.isfinite(ds['wind_speed_at_reference_height'].values)
+
+fig, axes = plt.subplots(4, 1, figsize=(8, 7), sharex=True)
+axes[0].plot(ds['time'], ds['wind_speed_at_reference_height'], label='10m wind speed')
+axes[0].set_ylabel('[m/s]')
+axes[0].legend()
+set_tight_ylim(axes[0], ds['wind_speed_at_reference_height'].values[full_window])
+
+axes[1].plot(ds.time, ts, label='SST')
+axes[1].plot(ds['time'], ds['air_temperature_at_reference_height'], label='Air Temp at ' + str(zrft) + 'm')
+axes[1].set_ylabel('[$^\circ$C]')
+axes[1].legend()
+temperature_values = np.concatenate((ts, ds['air_temperature_at_reference_height'].values))
+set_tight_ylim(axes[1], temperature_values)
+
+axes[2].plot(ds['time'], ds['relative_humidity_at_reference_height'], label='Humidity at ' + str(zrfq) + 'm')
+axes[2].set_ylabel('[%]')
+axes[2].legend()
+set_tight_ylim(axes[2], ds['relative_humidity_at_reference_height'].values)
+
+axes[3].plot(ds['time'], ds['evaporation_rate'], label='Evaporation Rate')
+axes[3].set_ylabel('[mm/hr]')
+axes[3].legend()
+set_tight_ylim(axes[3], ds['evaporation_rate'].values)
+
+for ax in axes:
+  ax.set_xlabel('')
+  ax.grid()
+fig.autofmt_xdate()
+plt.suptitle('SAFARI Mooring Focused Met and Evaporation, Full Record')
+plt.tight_layout()
+if savefig:
+  plt.savefig(__figdir__ / f'SAFARI_realtime_focused_met_evaporation_full.{plotfiletype}', **savefig_args)
+plt.show()
 # %%
 plt.figure()
 plt.plot(wave_time, CR6['FF']['Hs_fft'])
